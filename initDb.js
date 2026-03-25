@@ -1,7 +1,7 @@
-const PoolInstance = require('./db');
+const { pool } = require('./db');
 
 async function InitDb() {
-    await PoolInstance.query(`
+    await pool.query(`
         CREATE TABLE IF NOT EXISTS UserLinks (
             Id BIGSERIAL PRIMARY KEY,
             SteamId BIGINT NOT NULL UNIQUE,
@@ -10,7 +10,7 @@ async function InitDb() {
         );
     `);
 
-    await PoolInstance.query(`
+    await pool.query(`
         CREATE TABLE IF NOT EXISTS LinkCodes (
             Code VARCHAR(10) PRIMARY KEY,
             SteamId BIGINT NOT NULL,
@@ -20,7 +20,7 @@ async function InitDb() {
         );
     `);
 
-    await PoolInstance.query(`
+    await pool.query(`
         CREATE TABLE IF NOT EXISTS Entitlements (
             SteamId BIGINT NOT NULL,
             Key TEXT NOT NULL,
@@ -30,17 +30,17 @@ async function InitDb() {
         );
     `);
 
-    await PoolInstance.query(`
+    await pool.query(`
         CREATE INDEX IF NOT EXISTS IdxLinkCodesSteamId
         ON LinkCodes (SteamId);
     `);
 
-    await PoolInstance.query(`
+    await pool.query(`
         CREATE INDEX IF NOT EXISTS IdxUserLinksDiscordId
         ON UserLinks (DiscordId);
     `);
 
-    await PoolInstance.query(`
+    await pool.query(`
         CREATE INDEX IF NOT EXISTS IdxUserLinksSteamId
         ON UserLinks (SteamId);
     `);

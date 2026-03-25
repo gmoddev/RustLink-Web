@@ -1,7 +1,7 @@
 const express = require('express');
 const Router = express.Router();
 
-const PoolInstance = require('../db');
+const { pool } = require('../db');
 const AuthMiddleware = require('../middleware/auth');
 
 Router.post('/generate-code', AuthMiddleware, async (req, res) => {
@@ -14,7 +14,7 @@ Router.post('/generate-code', AuthMiddleware, async (req, res) => {
         });
     }
 
-    const Client = await PoolInstance.connect();
+    const Client = await pool.connect();
 
     try {
         const ExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
@@ -67,7 +67,7 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
         });
     }
 
-    const Client = await PoolInstance.connect();
+    const Client = await pool.connect();
 
     try {
         await Client.query('BEGIN');
@@ -217,7 +217,7 @@ Router.post('/get-link', AuthMiddleware, async (req, res) => {
     }
 
     try {
-        const Result = await PoolInstance.query(
+        const Result = await pool.query(
             `
             SELECT SteamId, DiscordId, LinkedAt
             FROM UserLinks
@@ -265,7 +265,7 @@ Router.post('/check-is-linked', AuthMiddleware, async (req, res) => {
     }
 
     try {
-        const LinkResult = await PoolInstance.query(
+        const LinkResult = await pool.query(
             `
             SELECT SteamId, DiscordId
             FROM UserLinks
@@ -287,7 +287,7 @@ Router.post('/check-is-linked', AuthMiddleware, async (req, res) => {
             });
         }
 
-        const EntitlementResult = await PoolInstance.query(
+        const EntitlementResult = await pool.query(
             `
             SELECT Booster, Vip, Admin
             FROM Entitlements
@@ -331,7 +331,7 @@ Router.post('/check-linked', AuthMiddleware, async (req, res) => {
     }
 
     try {
-        const LinkResult = await PoolInstance.query(
+        const LinkResult = await pool.query(
             `
             SELECT SteamId, DiscordId
             FROM UserLinks
@@ -352,7 +352,7 @@ Router.post('/check-linked', AuthMiddleware, async (req, res) => {
             });
         }
 
-        const EntitlementResult = await PoolInstance.query(
+        const EntitlementResult = await pool.query(
             `
             SELECT Booster, Vip, Admin
             FROM Entitlements

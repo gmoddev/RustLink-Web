@@ -1,7 +1,7 @@
 const express = require('express');
 const Router = express.Router();
 
-const PoolInstance = require('../db');
+const { pool } = require('../db');
 const AuthMiddleware = require('../middleware/auth');
 
 Router.post('/update-entitlements', AuthMiddleware, async (req, res) => {
@@ -14,7 +14,7 @@ Router.post('/update-entitlements', AuthMiddleware, async (req, res) => {
         });
     }
 
-    const Client = await PoolInstance.connect();
+    const Client = await pool.connect();
 
     try {
         await Client.query('BEGIN');
@@ -77,7 +77,7 @@ Router.post('/get-entitlements', AuthMiddleware, async (req, res) => {
     }
 
     try {
-        const Result = await PoolInstance.query(
+        const Result = await pool.query(
             `
             SELECT Key, Value
             FROM Entitlements
