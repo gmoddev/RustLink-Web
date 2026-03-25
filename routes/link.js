@@ -279,10 +279,11 @@ Router.post('/check-linked', AuthMiddleware, async (req, res) => {
             if (key === 'vip') entMap.Vip = row.value;
             if (key === 'admin') entMap.Admin = row.value;
         }
+        const discordId = LinkResult.rows[0]?.discordid ?? "Error";
 
         return res.json({
             linked: true,
-            discordId: LinkResult.rows[0].discordId,
+            discordId,
             entitlements: entMap
         });
     }
