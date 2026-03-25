@@ -301,4 +301,78 @@ Router.post('/check-linked', AuthMiddleware, async (req, res) => {
     }
 });
 
+// -------------------------
+// REMOVE LINK
+// -------------------------
+Router.post('/remove-link', AuthMiddleware, async (req, res) => {
+    const { steamId, discordId } = req.body;
+
+    if (!steamId && !discordId) {
+        return res.status(400).json({
+            success: false,
+            error: 'steamId or discordId is required'
+        });
+    }
+
+    const Client = await pool.connect();
+
+    try {
+        await Client.query('BEGIN');
+
+        let Result;
+
+        if (steamId) {
+            Result = await Client.query(
+                `DELETE FROM UserLinks
+                 WHERE SteamId = $1
+                 RETURNING SteamId, DiscordId`,
+                [steamId]
+            );
+        } else {
+            Result = await Client.query(
+                `DELETE FROM UserLinks
+                 WHERE DiscordId = $1
+                 RETURNING SteamId, DiscordId`,
+                [discordId]
+            );
+        }
+
+        if (Result.rows.length === 0) {
+            await Client.query('ROLLBACK');
+            return res.json({
+                success: false,
+                error: 'No link found'
+            });
+        }
+
+        const Row = Result.rows[0];
+
+        // Optional: also wipe entitlements
+        await Client.query(
+            `DELETE FROM Entitlements WHERE SteamId = $1`,
+            [Row.steamid]
+        );
+
+        await Client.query('COMMIT');
+
+        return res.json({
+            success: true,
+            steamId: Row.steamid.toString(),
+            discordId: Row.discordid.toString()
+        });
+    }
+    catch (Error) {
+        await Client.query('ROLLBACK');
+        console.error('remove-link error:', Error);
+
+        return res.status(500).json({
+            success: false,
+            error: 'Database error'
+        });
+    }
+    finally {
+        Client.release();
+    }
+});
+
 module.exports = Router;
