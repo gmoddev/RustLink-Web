@@ -282,6 +282,7 @@ Router.post('/check-linked', AuthMiddleware, async (req, res) => {
 
         return res.json({
             linked: true,
+            discordId: LinkResult.rows[0].discordId,
             entitlements: entMap
         });
     }
