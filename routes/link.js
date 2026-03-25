@@ -4,6 +4,9 @@ const Router = express.Router();
 const { pool } = require('../db');
 const AuthMiddleware = require('../middleware/auth');
 
+// -------------------------
+// GENERATE CODE
+// -------------------------
 Router.post('/generate-code', AuthMiddleware, async (req, res) => {
     const { steamId, code } = req.body;
 
@@ -22,26 +25,19 @@ Router.post('/generate-code', AuthMiddleware, async (req, res) => {
         await Client.query('BEGIN');
 
         await Client.query(
-            `
-            DELETE FROM LinkCodes
-            WHERE SteamId = $1
-            `,
+            `DELETE FROM LinkCodes WHERE SteamId = $1`,
             [steamId]
         );
 
         await Client.query(
-            `
-            INSERT INTO LinkCodes (Code, SteamId, ExpiresAt, Used)
-            VALUES ($1, $2, $3, FALSE)
-            `,
+            `INSERT INTO LinkCodes (Code, SteamId, ExpiresAt, Used)
+             VALUES ($1, $2, $3, FALSE)`,
             [code, steamId, ExpiresAt]
         );
 
         await Client.query('COMMIT');
 
-        return res.json({
-            success: true
-        });
+        return res.json({ success: true });
     }
     catch (Error) {
         await Client.query('ROLLBACK');
@@ -57,6 +53,10 @@ Router.post('/generate-code', AuthMiddleware, async (req, res) => {
     }
 });
 
+
+// -------------------------
+// LINK ACCOUNT
+// -------------------------
 Router.post('/link', AuthMiddleware, async (req, res) => {
     const { code, discordId } = req.body;
 
@@ -72,63 +72,43 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
     try {
         await Client.query('BEGIN');
 
+        // Get code
         const CodeResult = await Client.query(
-            `
-            SELECT Code, SteamId, ExpiresAt, Used
-            FROM LinkCodes
-            WHERE Code = $1
-            LIMIT 1
-            `,
+            `SELECT Code, SteamId, ExpiresAt, Used
+             FROM LinkCodes
+             WHERE Code = $1
+             LIMIT 1`,
             [code]
         );
 
         if (CodeResult.rows.length === 0) {
             await Client.query('ROLLBACK');
-            return res.json({
-                success: false,
-                error: 'Invalid code'
-            });
+            return res.json({ success: false, error: 'Invalid code' });
         }
 
         const CodeRow = CodeResult.rows[0];
 
         if (CodeRow.used) {
             await Client.query('ROLLBACK');
-            return res.json({
-                success: false,
-                error: 'Code already used'
-            });
+            return res.json({ success: false, error: 'Code already used' });
         }
 
         if (new Date(CodeRow.expiresat) < new Date()) {
             await Client.query('ROLLBACK');
-            return res.json({
-                success: false,
-                error: 'Code expired'
-            });
+            return res.json({ success: false, error: 'Code expired' });
         }
 
         const SteamId = CodeRow.steamid;
 
-        const ExistingSteamLinkResult = await Client.query(
-            `
-            SELECT SteamId, DiscordId
-            FROM UserLinks
-            WHERE SteamId = $1
-            LIMIT 1
-            `,
+        // Check if Steam already linked
+        const ExistingSteam = await Client.query(
+            `SELECT DiscordId FROM UserLinks WHERE SteamId = $1 LIMIT 1`,
             [SteamId]
         );
 
-        if (ExistingSteamLinkResult.rows.length > 0) {
-            const ExistingDiscordId = ExistingSteamLinkResult.rows[0].discordid;
-
+        if (ExistingSteam.rows.length > 0) {
             await Client.query(
-                `
-                UPDATE LinkCodes
-                SET Used = TRUE
-                WHERE Code = $1
-                `,
+                `UPDATE LinkCodes SET Used = TRUE WHERE Code = $1`,
                 [code]
             );
 
@@ -137,21 +117,17 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
             return res.json({
                 success: true,
                 alreadyLinked: true,
-                discordId: ExistingDiscordId
+                discordId: ExistingSteam.rows[0].discordid
             });
         }
 
-        const ExistingDiscordLinkResult = await Client.query(
-            `
-            SELECT SteamId, DiscordId
-            FROM UserLinks
-            WHERE DiscordId = $1
-            LIMIT 1
-            `,
+        // Check if Discord already linked
+        const ExistingDiscord = await Client.query(
+            `SELECT SteamId FROM UserLinks WHERE DiscordId = $1 LIMIT 1`,
             [discordId]
         );
 
-        if (ExistingDiscordLinkResult.rows.length > 0) {
+        if (ExistingDiscord.rows.length > 0) {
             await Client.query('ROLLBACK');
             return res.json({
                 success: false,
@@ -159,29 +135,27 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
             });
         }
 
+        // Insert link
         await Client.query(
-            `
-            INSERT INTO UserLinks (SteamId, DiscordId)
-            VALUES ($1, $2)
-            `,
+            `INSERT INTO UserLinks (SteamId, DiscordId)
+             VALUES ($1, $2)`,
             [SteamId, discordId]
         );
 
+        // Mark code used
         await Client.query(
-            `
-            UPDATE LinkCodes
-            SET Used = TRUE
-            WHERE Code = $1
-            `,
+            `UPDATE LinkCodes SET Used = TRUE WHERE Code = $1`,
             [code]
         );
 
+        // ✅ FIXED ENTITLEMENTS INSERT (key-value model)
         await Client.query(
-            `
-            INSERT INTO Entitlements (SteamId, Booster, Vip, Admin, LastUpdated)
-            VALUES ($1, FALSE, FALSE, FALSE, NOW())
-            ON CONFLICT (SteamId) DO NOTHING
-            `,
+            `INSERT INTO Entitlements (SteamId, Key, Value)
+             VALUES 
+                ($1, 'booster', FALSE),
+                ($1, 'vip', FALSE),
+                ($1, 'admin', FALSE)
+             ON CONFLICT (SteamId, Key) DO NOTHING`,
             [SteamId]
         );
 
@@ -206,6 +180,10 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
     }
 });
 
+
+// -------------------------
+// GET LINK
+// -------------------------
 Router.post('/get-link', AuthMiddleware, async (req, res) => {
     const { steamId } = req.body;
 
@@ -218,12 +196,10 @@ Router.post('/get-link', AuthMiddleware, async (req, res) => {
 
     try {
         const Result = await pool.query(
-            `
-            SELECT SteamId, DiscordId, LinkedAt
-            FROM UserLinks
-            WHERE SteamId = $1
-            LIMIT 1
-            `,
+            `SELECT SteamId, DiscordId, LinkedAt
+             FROM UserLinks
+             WHERE SteamId = $1
+             LIMIT 1`,
             [steamId]
         );
 
@@ -254,72 +230,10 @@ Router.post('/get-link', AuthMiddleware, async (req, res) => {
     }
 });
 
-Router.post('/check-is-linked', AuthMiddleware, async (req, res) => {
-    const { steamId } = req.body;
 
-    if (!steamId) {
-        return res.status(400).json({
-            success: false,
-            error: 'steamId is required'
-        });
-    }
-
-    try {
-        const LinkResult = await pool.query(
-            `
-            SELECT SteamId, DiscordId
-            FROM UserLinks
-            WHERE SteamId = $1
-            LIMIT 1
-            `,
-            [steamId]
-        );
-
-        if (LinkResult.rows.length === 0) {
-            return res.json({
-                success: true,
-                linked: false,
-                entitlements: {
-                    booster: false,
-                    vip: false,
-                    admin: false
-                }
-            });
-        }
-
-        const EntitlementResult = await pool.query(
-            `
-            SELECT Booster, Vip, Admin
-            FROM Entitlements
-            WHERE SteamId = $1
-            LIMIT 1
-            `,
-            [steamId]
-        );
-
-        const EntitlementRow = EntitlementResult.rows[0];
-
-        return res.json({
-            success: true,
-            linked: true,
-            discordId: LinkResult.rows[0].discordid.toString(),
-            entitlements: {
-                booster: EntitlementRow ? EntitlementRow.booster : false,
-                vip: EntitlementRow ? EntitlementRow.vip : false,
-                admin: EntitlementRow ? EntitlementRow.admin : false
-            }
-        });
-    }
-    catch (Error) {
-        console.error('check-is-linked error:', Error);
-
-        return res.status(500).json({
-            success: false,
-            error: 'Database error'
-        });
-    }
-});
-
+// -------------------------
+// CHECK LINKED + ENTITLEMENTS
+// -------------------------
 Router.post('/check-linked', AuthMiddleware, async (req, res) => {
     const { steamId } = req.body;
 
@@ -332,12 +246,7 @@ Router.post('/check-linked', AuthMiddleware, async (req, res) => {
 
     try {
         const LinkResult = await pool.query(
-            `
-            SELECT SteamId, DiscordId
-            FROM UserLinks
-            WHERE SteamId = $1
-            LIMIT 1
-            `,
+            `SELECT DiscordId FROM UserLinks WHERE SteamId = $1 LIMIT 1`,
             [steamId]
         );
 
@@ -353,24 +262,27 @@ Router.post('/check-linked', AuthMiddleware, async (req, res) => {
         }
 
         const EntitlementResult = await pool.query(
-            `
-            SELECT Booster, Vip, Admin
-            FROM Entitlements
-            WHERE SteamId = $1
-            LIMIT 1
-            `,
+            `SELECT Key, Value FROM Entitlements WHERE SteamId = $1`,
             [steamId]
         );
 
-        const EntitlementRow = EntitlementResult.rows[0];
+        const entMap = {
+            Booster: false,
+            Vip: false,
+            Admin: false
+        };
+
+        for (const row of EntitlementResult.rows) {
+            const key = row.key.toLowerCase();
+
+            if (key === 'booster') entMap.Booster = row.value;
+            if (key === 'vip') entMap.Vip = row.value;
+            if (key === 'admin') entMap.Admin = row.value;
+        }
 
         return res.json({
             linked: true,
-            entitlements: {
-                Booster: EntitlementRow ? EntitlementRow.booster : false,
-                Vip: EntitlementRow ? EntitlementRow.vip : false,
-                Admin: EntitlementRow ? EntitlementRow.admin : false
-            }
+            entitlements: entMap
         });
     }
     catch (Error) {
