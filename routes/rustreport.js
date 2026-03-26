@@ -5,6 +5,136 @@ const { pool } = require('../db');
 const AuthMiddleware = require('../middleware/auth');
 
 // ============================================================
+//  POST /server/setup
+//  Run once to create all tables. Safe to call multiple times.
+//  Hit with: curl -X POST https://your-api.com/server/setup \
+//    -H "Authorization: Bearer YOUR_KEY"
+// ============================================================
+Router.post('/setup', AuthMiddleware, async (req, res) => {
+    const Client = await pool.connect();
+
+    try {
+        await Client.query('BEGIN');
+
+        await Client.query(`
+            CREATE TABLE IF NOT EXISTS servers (
+                id              VARCHAR(64)     PRIMARY KEY,
+                name            VARCHAR(128)    NOT NULL,
+                ip              VARCHAR(45)     NOT NULL,
+                port            SMALLINT        NOT NULL,
+                description     TEXT,
+                pve             BOOLEAN         NOT NULL DEFAULT FALSE,
+                tags            TEXT[],
+                api_key_hash    VARCHAR(128),
+                created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+                updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+            )
+        `);
+
+        await Client.query(`
+            CREATE TABLE IF NOT EXISTS server_snapshots (
+                id              BIGSERIAL       PRIMARY KEY,
+                server_id       VARCHAR(64)     NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+                map_name        VARCHAR(128),
+                map_size        INTEGER,
+                map_seed        VARCHAR(32),
+                level_url       TEXT,
+                max_players     SMALLINT,
+                game_version    VARCHAR(32),
+                oxide_version   VARCHAR(32),
+                reported_at     TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+            )
+        `);
+
+        await Client.query(`CREATE INDEX IF NOT EXISTS idx_snapshots_server ON server_snapshots(server_id)`);
+
+        await Client.query(`
+            CREATE TABLE IF NOT EXISTS map_images (
+                id              BIGSERIAL       PRIMARY KEY,
+                server_id       VARCHAR(64)     NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+                snapshot_id     BIGINT,
+                map_seed        INTEGER         NOT NULL,
+                map_size        INTEGER         NOT NULL,
+                image_url       TEXT            NOT NULL,
+                fetched_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+                UNIQUE (server_id, map_seed, map_size)
+            )
+        `);
+
+        await Client.query(`
+            CREATE TABLE IF NOT EXISTS heartbeats (
+                id              BIGSERIAL       PRIMARY KEY,
+                server_id       VARCHAR(64)     NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+                player_count    SMALLINT        NOT NULL DEFAULT 0,
+                max_players     SMALLINT        NOT NULL DEFAULT 0,
+                sleeping_count  SMALLINT        NOT NULL DEFAULT 0,
+                fps             REAL            NOT NULL DEFAULT 0,
+                entity_count    INTEGER         NOT NULL DEFAULT 0,
+                reported_at     TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+            )
+        `);
+
+        await Client.query(`CREATE INDEX IF NOT EXISTS idx_heartbeats_server_time ON heartbeats(server_id, reported_at DESC)`);
+
+        await Client.query(`
+            CREATE TABLE IF NOT EXISTS players (
+                steam_id        VARCHAR(20)     PRIMARY KEY,
+                display_name    VARCHAR(128),
+                country_code    CHAR(2),
+                first_seen_at   TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+                last_seen_at    TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+            )
+        `);
+
+        await Client.query(`
+            CREATE TABLE IF NOT EXISTS player_sessions (
+                id                  BIGSERIAL       PRIMARY KEY,
+                server_id           VARCHAR(64)     NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+                steam_id            VARCHAR(20)     NOT NULL REFERENCES players(steam_id),
+                ip_address          INET,
+                joined_at           TIMESTAMPTZ     NOT NULL,
+                left_at             TIMESTAMPTZ,
+                disconnect_reason   TEXT
+            )
+        `);
+
+        await Client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_server ON player_sessions(server_id)`);
+        await Client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_steam  ON player_sessions(steam_id)`);
+        await Client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_joined ON player_sessions(joined_at DESC)`);
+
+        await Client.query(`
+            CREATE OR REPLACE VIEW v_server_status AS
+            SELECT DISTINCT ON (server_id)
+                server_id,
+                player_count,
+                max_players,
+                sleeping_count,
+                fps,
+                entity_count,
+                reported_at,
+                CASE
+                    WHEN reported_at > NOW() - INTERVAL '5 minutes' THEN 'online'
+                    ELSE 'offline'
+                END AS status
+            FROM heartbeats
+            ORDER BY server_id, reported_at DESC
+        `);
+
+        await Client.query('COMMIT');
+
+        return res.json({ success: true, message: 'All tables and views created successfully.' });
+    }
+    catch (Error) {
+        await Client.query('ROLLBACK');
+        console.error('server/setup error:', Error);
+        return res.status(500).json({ success: false, error: Error.message });
+    }
+    finally {
+        Client.release();
+    }
+});
+
+// ============================================================
 //  POST /server/startup
 //  Called once when the game server boots.
 // ============================================================
