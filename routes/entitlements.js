@@ -107,4 +107,60 @@ Router.post('/get-entitlements', AuthMiddleware, async (req, res) => {
     }
 });
 
+// -------------------------
+// UPDATE ENTITLEMENTS
+// -------------------------
+Router.post('/update-entitlements', AuthMiddleware, async (req, res) => {
+    const { steamId } = req.body;
+
+    if (!steamId) {
+        return res.status(400).json({
+            success: false,
+            error: 'steamId is required'
+        });
+    }
+
+    try {
+        // Check linked
+        const LinkResult = await pool.query(
+            `SELECT DiscordId FROM UserLinks WHERE SteamId = $1 LIMIT 1`,
+            [steamId]
+        );
+
+        if (LinkResult.rows.length === 0) {
+            return res.json({
+                success: false,
+                error: 'Not linked'
+            });
+        }
+
+        // Get entitlements
+        const EntitlementResult = await pool.query(
+            `SELECT Key, Value FROM Entitlements WHERE SteamId = $1`,
+            [steamId]
+        );
+
+        const enabled = [];
+
+        for (const row of EntitlementResult.rows) {
+            if (row.value === true) {
+                enabled.push(row.key.toLowerCase());
+            }
+        }
+
+        return res.json({
+            success: true,
+            entitlements: enabled
+        });
+    }
+    catch (Error) {
+        console.error('update-entitlements error:', Error);
+
+        return res.status(500).json({
+            success: false,
+            error: 'Database error'
+        });
+    }
+});
+
 module.exports = Router;
