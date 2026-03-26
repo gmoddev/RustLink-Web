@@ -158,7 +158,6 @@ Router.post('/startup', AuthMiddleware, async (req, res) => {
     try {
         await Client.query('BEGIN');
 
-        // Upsert the server row so re-boots update its metadata
         await Client.query(
             `
             INSERT INTO servers (id, name, ip, port, description, pve, tags, updated_at)
@@ -175,7 +174,6 @@ Router.post('/startup', AuthMiddleware, async (req, res) => {
             [serverId, serverName, ip, port, description ?? null, pve ?? false, tags ?? []]
         );
 
-        // Write a new snapshot for this boot
         const SnapshotResult = await Client.query(
             `
             INSERT INTO server_snapshots
@@ -219,7 +217,6 @@ Router.post('/request-map', AuthMiddleware, async (req, res) => {
     }
 
     try {
-        // Check if we already have a cached image for this seed+size
         const Existing = await pool.query(
             `SELECT image_url FROM map_images WHERE server_id = $1 AND map_seed = $2 AND map_size = $3 LIMIT 1`,
             [serverId, seed, size]
@@ -229,7 +226,6 @@ Router.post('/request-map', AuthMiddleware, async (req, res) => {
             return res.json({ success: true, imageUrl: Existing.rows[0].image_url, cached: true });
         }
 
-        // Fetch from rustmaps.com
         const Branch = staging ? 'staging' : 'main';
         const MapUrl = `https://rustmaps.com/api/v2/maps/${seed}/${size}?staging=${staging ? 1 : 0}`;
 
@@ -248,7 +244,6 @@ Router.post('/request-map', AuthMiddleware, async (req, res) => {
             return res.status(502).json({ success: false, error: 'No image URL in rustmaps response' });
         }
 
-        // Cache it
         await pool.query(
             `
             INSERT INTO map_images (server_id, map_seed, map_size, image_url)
@@ -522,8 +517,6 @@ Router.post('/map-image', AuthMiddleware, async (req, res) => {
     }
 
     try {
-        // We still need seed + size for uniqueness
-        // Get latest snapshot for this server
         const Snapshot = await pool.query(
             `SELECT id, map_seed, map_size 
              FROM server_snapshots 

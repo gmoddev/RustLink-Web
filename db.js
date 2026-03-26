@@ -10,7 +10,6 @@ const pool = new Pool({
     ssl: false // set true if using remote DB with SSL
 });
 
-// optional test connection
 pool.connect()
     .then(client => {
         console.log('✅ PostgreSQL connected');

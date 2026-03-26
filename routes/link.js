@@ -74,7 +74,6 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
     try {
         await Client.query('BEGIN');
 
-        // Get code
         const CodeResult = await Client.query(
             `SELECT Code, SteamId, ExpiresAt, Used
              FROM LinkCodes
@@ -102,11 +101,10 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
 
         const SteamId = CodeRow.steamid;
 
-        // Check if Steam already linked
         const ExistingSteam = await Client.query(
             `SELECT DiscordId FROM UserLinks WHERE SteamId = $1 LIMIT 1`,
             [SteamId]
-        ); // Line 109
+        ); 
 
         if (ExistingSteam.rows.length > 0) {
             await Client.query(
@@ -123,7 +121,6 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
             });
         }
 
-        // Check if Discord already linked
         const ExistingDiscord = await Client.query(
             `SELECT SteamId FROM UserLinks WHERE DiscordId = $1 LIMIT 1`,
             [discordId]
@@ -137,20 +134,17 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
             });
         }
 
-        // Insert link
         await Client.query(
             `INSERT INTO UserLinks (SteamId, DiscordId)
              VALUES ($1, $2)`,
             [SteamId, discordId]
         );
 
-        // Mark code used
         await Client.query(
             `UPDATE LinkCodes SET Used = TRUE WHERE Code = $1`,
             [code]
         );
 
-        // ✅ FIXED ENTITLEMENTS INSERT (key-value model)
         await Client.query(
             `INSERT INTO Entitlements (SteamId, Key, Value)
              VALUES 
@@ -349,7 +343,6 @@ Router.post('/remove-link', AuthMiddleware, async (req, res) => {
 
         const Row = Result.rows[0];
 
-        // Optional: also wipe entitlements
         await Client.query(
             `DELETE FROM Entitlements WHERE SteamId = $1`,
             [Row.steamid]
