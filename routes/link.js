@@ -58,7 +58,9 @@ Router.post('/generate-code', AuthMiddleware, async (req, res) => {
 // LINK ACCOUNT
 // -------------------------
 Router.post('/link', AuthMiddleware, async (req, res) => {
-    const { code, discordId } = req.body;
+    const { discordId } = req.body;
+
+    const code = req.body.code?.toString().toUpperCase().trim();
 
     if (!code || !discordId) {
         return res.status(400).json({
@@ -104,7 +106,7 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
         const ExistingSteam = await Client.query(
             `SELECT DiscordId FROM UserLinks WHERE SteamId = $1 LIMIT 1`,
             [SteamId]
-        );
+        ); // Line 109
 
         if (ExistingSteam.rows.length > 0) {
             await Client.query(
