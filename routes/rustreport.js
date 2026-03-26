@@ -507,4 +507,58 @@ Router.get('/:id/history', AuthMiddleware, async (req, res) => {
     }
 });
 
+// ============================================================
+//  POST /server/map-image
+//  Stores map image URL from game server (Facepunch upload)
+// ============================================================
+Router.post('/map-image', AuthMiddleware, async (req, res) => {
+    const { serverId, mapImage } = req.body;
+
+    if (!serverId || !mapImage) {
+        return res.status(400).json({
+            success: false,
+            error: 'serverId and mapImage are required'
+        });
+    }
+
+    try {
+        // We still need seed + size for uniqueness
+        // Get latest snapshot for this server
+        const Snapshot = await pool.query(
+            `SELECT id, map_seed, map_size 
+             FROM server_snapshots 
+             WHERE server_id = $1 
+             ORDER BY reported_at DESC 
+             LIMIT 1`,
+            [serverId]
+        );
+
+        if (Snapshot.rows.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'No snapshot found for server'
+            });
+        }
+
+        const { id: snapshotId, map_seed, map_size } = Snapshot.rows[0];
+
+        await pool.query(
+            `
+            INSERT INTO map_images (server_id, snapshot_id, map_seed, map_size, image_url)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (server_id, map_seed, map_size) DO UPDATE SET
+                image_url  = EXCLUDED.image_url,
+                fetched_at = NOW()
+            `,
+            [serverId, snapshotId, map_seed, map_size, mapImage]
+        );
+
+        return res.json({ success: true });
+    }
+    catch (Error) {
+        console.error('server/map-image error:', Error);
+        return res.status(500).json({ success: false, error: 'Database error' });
+    }
+});
+
 module.exports = Router;
