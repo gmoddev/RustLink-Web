@@ -6,39 +6,120 @@ const AuthMiddleware = require('../middleware/auth');
 
 
 // -------------------------
-// GENERATE CODE
+// HELPERS
 // -------------------------
-Router.post('/generate-code', AuthMiddleware, async (req, res) => {
-    const { platform, platformId, code } = req.body;
+function ParseCode(Code) {
+    const Clean = Code.toLowerCase().trim();
 
-    if (!platform || !platformId || !code) {
-        return res.status(400).json({
-            success: false,
-            error: 'platform, platformId, and code are required'
-        });
+    if (Clean.startsWith('rbx-')) {
+        return {
+            platform: 'roblox',
+            code: Clean.substring(4).toUpperCase()
+        };
+    }
+
+    if (Clean.startsWith('stm-')) {
+        return {
+            platform: 'steam',
+            code: Clean.substring(4).toUpperCase()
+        };
+    }
+
+    return null;
+}
+
+function GenerateCode(Prefix) {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let result = '';
+
+    for (let i = 0; i < 6; i++) {
+        result += chars[Math.floor(Math.random() * chars.length)];
+    }
+
+    return `${Prefix}-${result}`;
+}
+
+async function CreateLinkCode(Client, Platform, PlatformId, Code) {
+    const ExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await Client.query(
+        `DELETE FROM LinkCodes WHERE Platform = $1 AND PlatformId = $2`,
+        [Platform, PlatformId]
+    );
+
+    await Client.query(
+        `INSERT INTO LinkCodes (Code, Platform, PlatformId, ExpiresAt, Used)
+         VALUES ($1, $2, $3, $4, FALSE)`,
+        [Code, Platform, PlatformId, ExpiresAt]
+    );
+}
+
+
+// -------------------------
+// GENERATE ROBLOX CODE
+// -------------------------
+Router.post('/rbx-code', AuthMiddleware, async (req, res) => {
+    const { platformId } = req.body;
+
+    if (!platformId) {
+        return res.status(400).json({ success: false });
     }
 
     const Client = await pool.connect();
 
     try {
-        const ExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+        const FullCode = GenerateCode('rbx');
+        const Parsed = ParseCode(FullCode);
 
         await Client.query('BEGIN');
 
-        await Client.query(
-            `DELETE FROM LinkCodes WHERE Platform = $1 AND PlatformId = $2`,
-            [platform, platformId]
-        );
-
-        await Client.query(
-            `INSERT INTO LinkCodes (Code, Platform, PlatformId, ExpiresAt, Used)
-             VALUES ($1, $2, $3, $4, FALSE)`,
-            [code, platform, platformId, ExpiresAt]
-        );
+        await CreateLinkCode(Client, 'roblox', platformId, Parsed.code);
 
         await Client.query('COMMIT');
 
-        return res.json({ success: true });
+        return res.json({
+            success: true,
+            code: FullCode
+        });
+
+    } catch (err) {
+        await Client.query('ROLLBACK');
+        console.error(err);
+
+        return res.status(500).json({ success: false });
+    } finally {
+        Client.release();
+    }
+});
+
+
+// -------------------------
+// GENERATE STEAM CODE
+// -------------------------
+Router.post('/stm-code', AuthMiddleware, async (req, res) => {
+    const { platformId } = req.body;
+
+    if (!platformId) {
+        return res.status(400).json({ success: false });
+    }
+
+    const Client = await pool.connect();
+
+    try {
+        const FullCode = GenerateCode('stm');
+        const Parsed = ParseCode(FullCode);
+
+        await Client.query('BEGIN');
+
+        await CreateLinkCode(Client, 'steam', platformId, Parsed.code);
+
+        await Client.query('COMMIT');
+
+        return res.json({
+            success: true,
+            code: FullCode
+        });
+
     } catch (err) {
         await Client.query('ROLLBACK');
         console.error(err);
@@ -55,12 +136,21 @@ Router.post('/generate-code', AuthMiddleware, async (req, res) => {
 // -------------------------
 Router.post('/link', AuthMiddleware, async (req, res) => {
     const { platform, platformId } = req.body;
-    const code = req.body.code?.toString().toUpperCase().trim();
+    const rawCode = req.body.code?.toString();
 
-    if (!platform || !platformId || !code) {
+    if (!platform || !platformId || !rawCode) {
         return res.status(400).json({
             success: false,
             error: 'platform, platformId, and code are required'
+        });
+    }
+
+    const Parsed = ParseCode(rawCode);
+
+    if (!Parsed) {
+        return res.json({
+            success: false,
+            error: 'Invalid code format'
         });
     }
 
@@ -71,7 +161,7 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
 
         const CodeResult = await Client.query(
             `SELECT * FROM LinkCodes WHERE Code = $1 LIMIT 1`,
-            [code]
+            [Parsed.code]
         );
 
         if (CodeResult.rows.length === 0) {
@@ -81,20 +171,26 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
 
         const CodeRow = CodeResult.rows[0];
 
+        // Ensure prefix matches DB platform
+        if (CodeRow.platform !== Parsed.platform) {
+            await Client.query('ROLLBACK');
+            return res.json({ success: false, error: 'Code mismatch' });
+        }
+
         if (CodeRow.used) {
             await Client.query('ROLLBACK');
-            return res.json({ success: false, error: 'Code used' });
+            return res.json({ success: false, error: 'Code already used' });
         }
 
         if (new Date(CodeRow.expiresat) < new Date()) {
             await Client.query('ROLLBACK');
-            return res.json({ success: false, error: 'Expired' });
+            return res.json({ success: false, error: 'Code expired' });
         }
 
         const TargetPlatform = CodeRow.platform;
         const TargetId = CodeRow.platformid;
 
-        // Find existing users
+        // Check existing users
         const ExistingA = await Client.query(
             `SELECT UserId FROM UserAccounts WHERE Platform = $1 AND PlatformId = $2`,
             [TargetPlatform, TargetId]
@@ -108,7 +204,6 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
         let UserId;
 
         if (ExistingA.rows.length === 0 && ExistingB.rows.length === 0) {
-            // Create new user
             const NewUser = await Client.query(
                 `INSERT INTO Users DEFAULT VALUES RETURNING Id`
             );
@@ -151,13 +246,11 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
             UserId = ExistingA.rows[0].userid;
         }
 
-        // Mark code used
         await Client.query(
             `UPDATE LinkCodes SET Used = TRUE WHERE Code = $1`,
-            [code]
+            [Parsed.code]
         );
 
-        // Ensure entitlements exist
         await Client.query(
             `INSERT INTO Entitlements (UserId, Key, Value)
              VALUES 
@@ -188,10 +281,6 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
 // -------------------------
 Router.post('/get-link', AuthMiddleware, async (req, res) => {
     const { platform, platformId } = req.body;
-
-    if (!platform || !platformId) {
-        return res.status(400).json({ success: false });
-    }
 
     try {
         const Result = await pool.query(
@@ -299,10 +388,7 @@ Router.post('/remove-link', AuthMiddleware, async (req, res) => {
         );
 
         if (parseInt(Remaining.rows[0].count) === 0) {
-            await Client.query(
-                `DELETE FROM Users WHERE Id = $1`,
-                [UserId]
-            );
+            await Client.query(`DELETE FROM Users WHERE Id = $1`, [UserId]);
         }
 
         await Client.query('COMMIT');
