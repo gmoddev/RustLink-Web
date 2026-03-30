@@ -4,16 +4,17 @@ const Router = express.Router();
 const { pool } = require('../db');
 const AuthMiddleware = require('../middleware/auth');
 
+
 // -------------------------
 // GENERATE CODE
 // -------------------------
 Router.post('/generate-code', AuthMiddleware, async (req, res) => {
-    const { steamId, code } = req.body;
+    const { platform, platformId, code } = req.body;
 
-    if (!steamId || !code) {
+    if (!platform || !platformId || !code) {
         return res.status(400).json({
             success: false,
-            error: 'steamId and code are required'
+            error: 'platform, platformId, and code are required'
         });
     }
 
@@ -25,30 +26,25 @@ Router.post('/generate-code', AuthMiddleware, async (req, res) => {
         await Client.query('BEGIN');
 
         await Client.query(
-            `DELETE FROM LinkCodes WHERE SteamId = $1`,
-            [steamId]
+            `DELETE FROM LinkCodes WHERE Platform = $1 AND PlatformId = $2`,
+            [platform, platformId]
         );
 
         await Client.query(
-            `INSERT INTO LinkCodes (Code, SteamId, ExpiresAt, Used)
-             VALUES ($1, $2, $3, FALSE)`,
-            [code, steamId, ExpiresAt]
+            `INSERT INTO LinkCodes (Code, Platform, PlatformId, ExpiresAt, Used)
+             VALUES ($1, $2, $3, $4, FALSE)`,
+            [code, platform, platformId, ExpiresAt]
         );
 
         await Client.query('COMMIT');
 
         return res.json({ success: true });
-    }
-    catch (Error) {
+    } catch (err) {
         await Client.query('ROLLBACK');
-        console.error('generate-code error:', Error);
+        console.error(err);
 
-        return res.status(500).json({
-            success: false,
-            error: 'Database error'
-        });
-    }
-    finally {
+        return res.status(500).json({ success: false });
+    } finally {
         Client.release();
     }
 });
@@ -58,14 +54,13 @@ Router.post('/generate-code', AuthMiddleware, async (req, res) => {
 // LINK ACCOUNT
 // -------------------------
 Router.post('/link', AuthMiddleware, async (req, res) => {
-    const { discordId } = req.body;
-
+    const { platform, platformId } = req.body;
     const code = req.body.code?.toString().toUpperCase().trim();
 
-    if (!code || !discordId) {
+    if (!platform || !platformId || !code) {
         return res.status(400).json({
             success: false,
-            error: 'code and discordId are required'
+            error: 'platform, platformId, and code are required'
         });
     }
 
@@ -75,10 +70,7 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
         await Client.query('BEGIN');
 
         const CodeResult = await Client.query(
-            `SELECT Code, SteamId, ExpiresAt, Used
-             FROM LinkCodes
-             WHERE Code = $1
-             LIMIT 1`,
+            `SELECT * FROM LinkCodes WHERE Code = $1 LIMIT 1`,
             [code]
         );
 
@@ -91,138 +83,142 @@ Router.post('/link', AuthMiddleware, async (req, res) => {
 
         if (CodeRow.used) {
             await Client.query('ROLLBACK');
-            return res.json({ success: false, error: 'Code already used' });
+            return res.json({ success: false, error: 'Code used' });
         }
 
         if (new Date(CodeRow.expiresat) < new Date()) {
             await Client.query('ROLLBACK');
-            return res.json({ success: false, error: 'Code expired' });
+            return res.json({ success: false, error: 'Expired' });
         }
 
-        const SteamId = CodeRow.steamid;
+        const TargetPlatform = CodeRow.platform;
+        const TargetId = CodeRow.platformid;
 
-        const ExistingSteam = await Client.query(
-            `SELECT DiscordId FROM UserLinks WHERE SteamId = $1 LIMIT 1`,
-            [SteamId]
-        ); 
+        // Find existing users
+        const ExistingA = await Client.query(
+            `SELECT UserId FROM UserAccounts WHERE Platform = $1 AND PlatformId = $2`,
+            [TargetPlatform, TargetId]
+        );
 
-        if (ExistingSteam.rows.length > 0) {
-            await Client.query(
-                `UPDATE LinkCodes SET Used = TRUE WHERE Code = $1`,
-                [code]
+        const ExistingB = await Client.query(
+            `SELECT UserId FROM UserAccounts WHERE Platform = $1 AND PlatformId = $2`,
+            [platform, platformId]
+        );
+
+        let UserId;
+
+        if (ExistingA.rows.length === 0 && ExistingB.rows.length === 0) {
+            // Create new user
+            const NewUser = await Client.query(
+                `INSERT INTO Users DEFAULT VALUES RETURNING Id`
             );
 
-            await Client.query('COMMIT');
+            UserId = NewUser.rows[0].id;
 
-            return res.json({
-                success: true,
-                alreadyLinked: true,
-                discordId: ExistingSteam.rows[0].discordid
-            });
+            await Client.query(
+                `INSERT INTO UserAccounts (UserId, Platform, PlatformId)
+                 VALUES ($1, $2, $3), ($1, $4, $5)`,
+                [UserId, TargetPlatform, TargetId, platform, platformId]
+            );
+
+        } else if (ExistingA.rows.length > 0 && ExistingB.rows.length === 0) {
+            UserId = ExistingA.rows[0].userid;
+
+            await Client.query(
+                `INSERT INTO UserAccounts (UserId, Platform, PlatformId)
+                 VALUES ($1, $2, $3)`,
+                [UserId, platform, platformId]
+            );
+
+        } else if (ExistingA.rows.length === 0 && ExistingB.rows.length > 0) {
+            UserId = ExistingB.rows[0].userid;
+
+            await Client.query(
+                `INSERT INTO UserAccounts (UserId, Platform, PlatformId)
+                 VALUES ($1, $2, $3)`,
+                [UserId, TargetPlatform, TargetId]
+            );
+
+        } else {
+            if (ExistingA.rows[0].userid !== ExistingB.rows[0].userid) {
+                await Client.query('ROLLBACK');
+                return res.json({
+                    success: false,
+                    error: 'Accounts already linked to different users'
+                });
+            }
+
+            UserId = ExistingA.rows[0].userid;
         }
 
-        const ExistingDiscord = await Client.query(
-            `SELECT SteamId FROM UserLinks WHERE DiscordId = $1 LIMIT 1`,
-            [discordId]
-        );
-
-        if (ExistingDiscord.rows.length > 0) {
-            await Client.query('ROLLBACK');
-            return res.json({
-                success: false,
-                error: 'Discord account already linked'
-            });
-        }
-
-        await Client.query(
-            `INSERT INTO UserLinks (SteamId, DiscordId)
-             VALUES ($1, $2)`,
-            [SteamId, discordId]
-        );
-
+        // Mark code used
         await Client.query(
             `UPDATE LinkCodes SET Used = TRUE WHERE Code = $1`,
             [code]
         );
 
+        // Ensure entitlements exist
         await Client.query(
-            `INSERT INTO Entitlements (SteamId, Key, Value)
+            `INSERT INTO Entitlements (UserId, Key, Value)
              VALUES 
                 ($1, 'booster', FALSE),
                 ($1, 'vip', FALSE),
                 ($1, 'admin', FALSE)
-             ON CONFLICT (SteamId, Key) DO NOTHING`,
-            [SteamId]
+             ON CONFLICT (UserId, Key) DO NOTHING`,
+            [UserId]
         );
 
         await Client.query('COMMIT');
 
-        return res.json({
-            success: true,
-            alreadyLinked: false
-        });
-    }
-    catch (Error) {
-        await Client.query('ROLLBACK');
-        console.error('link error:', Error);
+        return res.json({ success: true });
 
-        return res.status(500).json({
-            success: false,
-            error: 'Database error'
-        });
-    }
-    finally {
+    } catch (err) {
+        await Client.query('ROLLBACK');
+        console.error(err);
+
+        return res.status(500).json({ success: false });
+    } finally {
         Client.release();
     }
 });
 
 
 // -------------------------
-// GET LINK
+// GET LINKED ACCOUNTS
 // -------------------------
 Router.post('/get-link', AuthMiddleware, async (req, res) => {
-    const { steamId } = req.body;
+    const { platform, platformId } = req.body;
 
-    if (!steamId) {
-        return res.status(400).json({
-            success: false,
-            error: 'steamId is required'
-        });
+    if (!platform || !platformId) {
+        return res.status(400).json({ success: false });
     }
 
     try {
         const Result = await pool.query(
-            `SELECT SteamId, DiscordId, LinkedAt
-             FROM UserLinks
-             WHERE SteamId = $1
-             LIMIT 1`,
-            [steamId]
+            `SELECT UserId FROM UserAccounts
+             WHERE Platform = $1 AND PlatformId = $2`,
+            [platform, platformId]
         );
 
         if (Result.rows.length === 0) {
-            return res.json({
-                success: true,
-                linked: false
-            });
+            return res.json({ linked: false });
         }
 
-        const Row = Result.rows[0];
+        const UserId = Result.rows[0].userid;
+
+        const Accounts = await pool.query(
+            `SELECT Platform, PlatformId FROM UserAccounts WHERE UserId = $1`,
+            [UserId]
+        );
 
         return res.json({
-            success: true,
             linked: true,
-            steamId: Row.steamid.toString(),
-            discordId: Row.discordid.toString(),
-            linkedAt: Row.linkedat
+            accounts: Accounts.rows
         });
-    }
-    catch (Error) {
-        console.error('get-link error:', Error);
 
-        return res.status(500).json({
-            success: false,
-            error: 'Database error'
-        });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ success: false });
     }
 });
 
@@ -231,141 +227,94 @@ Router.post('/get-link', AuthMiddleware, async (req, res) => {
 // CHECK LINKED + ENTITLEMENTS
 // -------------------------
 Router.post('/check-linked', AuthMiddleware, async (req, res) => {
-    const { steamId } = req.body;
-
-    if (!steamId) {
-        return res.status(400).json({
-            success: false,
-            error: 'steamId is required'
-        });
-    }
+    const { platform, platformId } = req.body;
 
     try {
-        const LinkResult = await pool.query(
-            `SELECT DiscordId FROM UserLinks WHERE SteamId = $1 LIMIT 1`,
-            [steamId]
+        const Result = await pool.query(
+            `SELECT UserId FROM UserAccounts
+             WHERE Platform = $1 AND PlatformId = $2`,
+            [platform, platformId]
         );
 
-        if (LinkResult.rows.length === 0) {
+        if (Result.rows.length === 0) {
             return res.json({
                 linked: false,
-                entitlements: {
-                    Booster: false,
-                    Vip: false,
-                    Admin: false
-                }
+                entitlements: {}
             });
         }
 
-        const EntitlementResult = await pool.query(
-            `SELECT Key, Value FROM Entitlements WHERE SteamId = $1`,
-            [steamId]
+        const UserId = Result.rows[0].userid;
+
+        const Ent = await pool.query(
+            `SELECT Key, Value FROM Entitlements WHERE UserId = $1`,
+            [UserId]
         );
 
-        const entMap = {
-            Booster: false,
-            Vip: false,
-            Admin: false
-        };
+        const map = {};
 
-        for (const row of EntitlementResult.rows) {
-            const key = row.key.toLowerCase();
-
-            if (key === 'booster') entMap.Booster = row.value;
-            if (key === 'vip') entMap.Vip = row.value;
-            if (key === 'admin') entMap.Admin = row.value;
+        for (const row of Ent.rows) {
+            map[row.key] = row.value;
         }
-        const discordId = LinkResult.rows[0]?.discordid ?? "Error";
 
         return res.json({
             linked: true,
-            discordId,
-            entitlements: entMap
+            entitlements: map
         });
-    }
-    catch (Error) {
-        console.error('check-linked error:', Error);
 
-        return res.status(500).json({
-            linked: false,
-            entitlements: {
-                Booster: false,
-                Vip: false,
-                Admin: false
-            }
-        });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ success: false });
     }
 });
+
 
 // -------------------------
 // REMOVE LINK
 // -------------------------
 Router.post('/remove-link', AuthMiddleware, async (req, res) => {
-    const { steamId, discordId } = req.body;
-
-    if (!steamId && !discordId) {
-        return res.status(400).json({
-            success: false,
-            error: 'steamId or discordId is required'
-        });
-    }
+    const { platform, platformId } = req.body;
 
     const Client = await pool.connect();
 
     try {
         await Client.query('BEGIN');
 
-        let Result;
-
-        if (steamId) {
-            Result = await Client.query(
-                `DELETE FROM UserLinks
-                 WHERE SteamId = $1
-                 RETURNING SteamId, DiscordId`,
-                [steamId]
-            );
-        } else {
-            Result = await Client.query(
-                `DELETE FROM UserLinks
-                 WHERE DiscordId = $1
-                 RETURNING SteamId, DiscordId`,
-                [discordId]
-            );
-        }
+        const Result = await Client.query(
+            `DELETE FROM UserAccounts
+             WHERE Platform = $1 AND PlatformId = $2
+             RETURNING UserId`,
+            [platform, platformId]
+        );
 
         if (Result.rows.length === 0) {
             await Client.query('ROLLBACK');
-            return res.json({
-                success: false,
-                error: 'No link found'
-            });
+            return res.json({ success: false });
         }
 
-        const Row = Result.rows[0];
+        const UserId = Result.rows[0].userid;
 
-        await Client.query(
-            `DELETE FROM Entitlements WHERE SteamId = $1`,
-            [Row.steamid]
+        const Remaining = await Client.query(
+            `SELECT COUNT(*) FROM UserAccounts WHERE UserId = $1`,
+            [UserId]
         );
+
+        if (parseInt(Remaining.rows[0].count) === 0) {
+            await Client.query(
+                `DELETE FROM Users WHERE Id = $1`,
+                [UserId]
+            );
+        }
 
         await Client.query('COMMIT');
 
-        return res.json({
-            success: true,
-            steamId: Row.steamid.toString(),
-            discordId: Row.discordid.toString()
-        });
-    }
-    catch (Error) {
-        await Client.query('ROLLBACK');
-        console.error('remove-link error:', Error);
+        return res.json({ success: true });
 
-        return res.status(500).json({
-            success: false,
-            error: 'Database error'
-        });
-    }
-    finally {
+    } catch (err) {
+        await Client.query('ROLLBACK');
+        console.error(err);
+
+        return res.status(500).json({ success: false });
+    } finally {
         Client.release();
     }
 });
