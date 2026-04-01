@@ -19,6 +19,7 @@ App.get('/', (req, res) => {
 
 App.use('/', require('./routes/link'));
 App.use('/', require('./routes/entitlements'));
+App.use('/callsign',require('./routes/callsigns'))
 App.use('/server', require('./routes/rustreport'));
 async function StartServer() {
     try {
